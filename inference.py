@@ -3,24 +3,49 @@ import random
 import numpy as np
 import os
 
-from env.ambulance_env import AmbclearEnv  # ensure this matches your class name
+from openai import OpenAI
+from env.ambulance_env import AmbclearEnv
 from env.graders import grade
-
-app = Flask(__name__)
 
 # -------------------------
 # ENV VARIABLES
 # -------------------------
 
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
-MODEL_NAME = os.getenv("MODEL_NAME", "baseline-agent")
+
+MODEL_NAME = os.getenv(
+    "MODEL_NAME",
+    "Qwen/Qwen2.5-7B-Instruct"
+)
+
 HF_TOKEN = os.getenv("HF_TOKEN")
+LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
+
+print("HF_TOKEN loaded:", bool(HF_TOKEN), flush=True)
+
+if not HF_TOKEN:
+    raise ValueError("HF_TOKEN is missing. Add it in Secrets.")
+
+# -------------------------
+# OPENAI CLIENT
+# -------------------------
+
+client = OpenAI(
+    base_url=API_BASE_URL,
+    api_key=HF_TOKEN
+)
+
+# -------------------------
+# FLASK APP
+# -------------------------
+
+app = Flask(__name__)
 
 TASKS = ["easy", "medium", "hard"]
 BENCHMARK = "ambclear"
 
 # -------------------------
-# SEED (REPRODUCIBILITY)
+# SEED
 # -------------------------
 
 SEED = 42
@@ -28,24 +53,61 @@ random.seed(SEED)
 np.random.seed(SEED)
 
 # -------------------------
-# SMART POLICY
+# GLOBAL LLM STATE
+# -------------------------
+
+LLM_AVAILABLE = True
+
+# -------------------------
+# LLM FUNCTION (SAFE)
+# -------------------------
+
+def query_llm(prompt: str):
+    global LLM_AVAILABLE
+
+    if not LLM_AVAILABLE:
+        return None
+
+    try:
+        response = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "Return ONLY one number: 0, 1, 2, or 3"
+                },
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.1,
+            max_tokens=5
+        )
+
+        output = response.choices[0].message.content.strip()
+
+        for ch in output:
+            if ch in "0123":
+                return int(ch)
+
+        return None
+
+    except Exception as e:
+        print(f"[LLM ERROR] {e}", flush=True)
+
+        # Disable LLM if quota is exhausted
+        if "402" in str(e) or "credits" in str(e).lower():
+            print("[LLM DISABLED] switching to local policy only", flush=True)
+            LLM_AVAILABLE = False
+
+        return None
+
+# -------------------------
+# SMART POLICY (MAIN AGENT)
 # -------------------------
 
 def get_action(env):
 
     ax, ay = env.ambulance_pos
     hx, hy = env.hospital_pos
-
-    preferred_moves = []
-
-    if hy > ay:
-        preferred_moves.append(3)
-    if hy < ay:
-        preferred_moves.append(2)
-    if hx > ax:
-        preferred_moves.append(1)
-    if hx < ax:
-        preferred_moves.append(0)
 
     move_map = {
         0: (-1, 0),
@@ -54,28 +116,63 @@ def get_action(env):
         3: (0, 1)
     }
 
-    # Try preferred safe moves
-    for action in preferred_moves:
-        dx, dy = move_map[action]
-        nx = max(0, min(ax + dx, 6))
-        ny = max(0, min(ay + dy, 6))
+    def is_safe(nx, ny):
+        return [nx, ny] not in env.vehicle_positions
 
-        if [nx, ny] not in env.vehicle_positions:
-            return action
+    # -------------------------
+    # GREEDY DISTANCE POLICY (PRIMARY)
+    # -------------------------
 
-    # Try any safe move
+    candidates = []
+
     for action, (dx, dy) in move_map.items():
         nx = max(0, min(ax + dx, 6))
         ny = max(0, min(ay + dy, 6))
 
-        if [nx, ny] not in env.vehicle_positions:
-            return action
+        dist = abs(nx - hx) + abs(ny - hy)
 
-    # Last fallback
+        if is_safe(nx, ny):
+            candidates.append((dist, action))
+
+    if candidates:
+        candidates.sort()
+        return candidates[0][1]
+
+    # -------------------------
+    # LLM FALLBACK
+    # -------------------------
+
+    prompt = f"""
+Ambulance: ({ax},{ay})
+Hospital: ({hx},{hy})
+Obstacles: {env.vehicle_positions}
+"""
+
+    llm_action = query_llm(prompt)
+
+    if llm_action is not None:
+        return llm_action
+
+    # -------------------------
+    # SAFE RANDOM FALLBACK
+    # -------------------------
+
+    safe_actions = []
+
+    for action, (dx, dy) in move_map.items():
+        nx = max(0, min(ax + dx, 6))
+        ny = max(0, min(ay + dy, 6))
+
+        if is_safe(nx, ny):
+            safe_actions.append(action)
+
+    if safe_actions:
+        return random.choice(safe_actions)
+
     return random.randint(0, 3)
 
 # -------------------------
-# RUN SINGLE TASK
+# RUN TASK
 # -------------------------
 
 def run_task(task_name):
@@ -93,12 +190,10 @@ def run_task(task_name):
         while not done:
 
             steps += 1
-
             action = get_action(env)
 
             result = env.step(action)
 
-            # Handle both 3 or 4 return values
             if len(result) == 3:
                 state, reward, done = result
             else:
@@ -115,34 +210,25 @@ def run_task(task_name):
                 break
 
         score = grade(task_name, env)
-        success = str(score >= 0.5).lower()
+        success = score >= 0.5
 
     except Exception as e:
-        print(
-            f"[STEP] step={steps} action=error reward=0.00 done=true error={str(e)}",
-            flush=True
-        )
+        print(f"[STEP] step={steps} action=error reward=0 done=true error={e}", flush=True)
         score = 0.0
-        success = "false"
-
-    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
+        success = False
 
     print(
-        f"[END] success={success} steps={steps} score={score:.3f} rewards={rewards_str}",
+        f"[END] success={success} steps={steps} score={score:.3f} rewards={rewards}",
         flush=True
     )
 
 # -------------------------
-# MAIN INFERENCE
+# MAIN LOOP
 # -------------------------
 
 def run_inference():
     for task in TASKS:
         run_task(task)
-
-# -------------------------
-# SINGLE RUN GUARD
-# -------------------------
 
 has_run = False
 
@@ -155,7 +241,7 @@ def home():
     return "<pre>Inference completed</pre>"
 
 # -------------------------
-# MAIN
+# ENTRYPOINT
 # -------------------------
 
 if __name__ == "__main__":
