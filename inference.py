@@ -7,7 +7,6 @@ from typing import List, Tuple, Optional
 from env.ambulance_env import AmbclearEnv
 
 # ── config ─────────────────────────────────────
-
 TASK_NAME = os.getenv("TASK_NAME", None)
 BENCHMARK = os.getenv("BENCHMARK", "ambulance")
 
@@ -17,47 +16,29 @@ np.random.seed(SEED)
 
 MAX_POSSIBLE_REWARD = 1.0
 
-# grid encoding
 AMBULANCE_ID = 2
 HOSPITAL_ID  = 3
 VEHICLE_ID   = 1
 SIGNAL_ID    = 4
 
-UP, DOWN, LEFT, RIGHT = 0,1,2,3
+UP, DOWN, LEFT, RIGHT = 0, 1, 2, 3
+DELTAS = {UP: (-1,0), DOWN: (1,0), LEFT: (0,-1), RIGHT: (0,1)}
 
-DELTAS = {
-    UP: (-1,0),
-    DOWN: (1,0),
-    LEFT: (0,-1),
-    RIGHT: (0,1)
-}
-
-# ── logging (MANDATORY FORMAT) ─────────────────
-
+# ── logging ─────────────────────────────────────
 def log_start(task, env, model):
-    print(
-        f"[START] task={task} env={env} model={model}",
-        flush=True
-    )
+    print(f"[START] task={task} env={env} model={model}", flush=True)
 
 def log_step(step, action, reward, done, error=None):
-
-    error_val = error if error else "null"
-
     print(
         f"[STEP] step={step} action={action} "
         f"reward={reward:.2f} "
         f"done={str(done).lower()} "
-        f"error={error_val}",
+        f"error={error or 'null'}",
         flush=True
     )
 
 def log_end(success, steps, score, rewards):
-
-    rewards_str = ",".join(
-        f"{r:.2f}" for r in rewards
-    )
-
+    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
     print(
         f"[END] success={str(success).lower()} "
         f"steps={steps} "
@@ -67,207 +48,144 @@ def log_end(success, steps, score, rewards):
     )
 
 # ── helpers ─────────────────────────────────────
-
 def find_entity(grid, entity_id):
-
     positions = list(zip(*np.where(grid == entity_id)))
-
     return tuple(positions[0]) if positions else None
 
-
 def get_vehicles(grid):
-
-    if np.any(grid == VEHICLE_ID):
-        return [tuple(p) for p in zip(*np.where(grid == VEHICLE_ID))]
-
-    return []
-
+    return [tuple(p) for p in zip(*np.where(grid == VEHICLE_ID))] \
+        if np.any(grid == VEHICLE_ID) else []
 
 def get_signals(grid):
+    return [tuple(p) for p in zip(*np.where(grid == SIGNAL_ID))] \
+        if np.any(grid == SIGNAL_ID) else []
 
-    if np.any(grid == SIGNAL_ID):
-        return [tuple(p) for p in zip(*np.where(grid == SIGNAL_ID))]
-
-    return []
-
-
-# ── A* ─────────────────────────────────────────
-
+# ── A* ───────────────────────────────────────────
 def astar(start, goal, vehicles, signals):
-
     vehicle_set = set(vehicles)
     signal_set  = set(signals)
 
-    def heuristic(r,c):
-        return abs(r-goal[0]) + abs(c-goal[1])
+    def heuristic(r, c):
+        return abs(r - goal[0]) + abs(c - goal[1])
 
-    heap = [(heuristic(start[0],start[1]),0,start[0],start[1],None)]
-
+    heap    = [(heuristic(start[0], start[1]), 0, start[0], start[1], None)]
     visited = {}
 
     while heap:
+        f, g, r, c, first_act = heapq.heappop(heap)
 
-        f,g,r,c,first_act = heapq.heappop(heap)
-
-        if (r,c) in visited:
+        if (r, c) in visited:
             continue
+        visited[(r, c)] = g
 
-        visited[(r,c)] = g
-
-        if (r,c) == goal:
+        if (r, c) == goal:
             return first_act
 
-        for action,(dr,dc) in DELTAS.items():
-
-            nr,nc = r+dr , c+dc
-
-            if not (0<=nr<7 and 0<=nc<7):
+        for action, (dr, dc) in DELTAS.items():
+            nr, nc = r + dr, c + dc
+            if not (0 <= nr < 7 and 0 <= nc < 7):
                 continue
-
-            if (nr,nc) in vehicle_set:
+            if (nr, nc) in vehicle_set:
                 continue
-
-            step_cost = 4 if (nr,nc) in signal_set else 1
-
+            step_cost = 4 if (nr, nc) in signal_set else 1
             new_g = g + step_cost
-            new_f = new_g + heuristic(nr,nc)
-
-            if (nr,nc) not in visited:
-
+            new_f = new_g + heuristic(nr, nc)
+            if (nr, nc) not in visited:
                 fa = action if first_act is None else first_act
+                heapq.heappush(heap, (new_f, new_g, nr, nc, fa))
 
-                heapq.heappush(
-                    heap,
-                    (new_f,new_g,nr,nc,fa)
-                )
+    return random.randint(0, 3)
 
-    return random.randint(0,3)
+# ── greedy fallback ──────────────────────────────
+def greedy_fallback(amb, goal, vehicles):
+    vehicle_set = set(vehicles)
+    row_diff    = goal[0] - amb[0]
+    col_diff    = goal[1] - amb[1]
+    candidates  = []
 
+    if row_diff != 0:
+        candidates.append((abs(row_diff), DOWN if row_diff > 0 else UP))
+    if col_diff != 0:
+        candidates.append((abs(col_diff), RIGHT if col_diff > 0 else LEFT))
 
-# ── run episode ───────────────────────────────
+    candidates.sort(reverse=True)
 
+    for _, action in candidates:
+        dr, dc = DELTAS[action]
+        if (amb[0]+dr, amb[1]+dc) not in vehicle_set:
+            return action
+
+    for action in [RIGHT, DOWN, UP, LEFT]:
+        dr, dc = DELTAS[action]
+        if (amb[0]+dr, amb[1]+dc) not in vehicle_set:
+            return action
+
+    return random.randint(0, 3)
+
+# ── run one episode ──────────────────────────────
 def run_episode(task_name):
-
-    env = AmbclearEnv(task_name)
-
-    rewards = []
+    env         = AmbclearEnv(task_name)
+    rewards     = []
     steps_taken = 0
-    success = False
+    success     = False
+    score       = 0.0  # always initialized
 
-    log_start(
-        task=task_name,
-        env=BENCHMARK,
-        model="astar-agent"
-    )
+    log_start(task=task_name, env=BENCHMARK, model="astar-agent")
 
     try:
-
-        obs = env.reset()
-
+        obs  = env.reset()
         done = False
 
-        for step in range(1, env.max_steps+1):
-
+        for step in range(1, env.max_steps + 1):
             if done:
                 break
 
-            grid = np.array(obs)
-
-            amb = find_entity(grid,AMBULANCE_ID)
-            hosp = find_entity(grid,HOSPITAL_ID)
-
+            grid     = np.array(obs)
+            amb      = find_entity(grid, AMBULANCE_ID)
+            hosp     = find_entity(grid, HOSPITAL_ID)
             vehicles = get_vehicles(grid)
             signals  = get_signals(grid)
 
             if amb and hosp:
-
-                action = astar(
-                    amb,
-                    hosp,
-                    vehicles,
-                    signals
-                )
-
+                action = astar(amb, hosp, vehicles, signals)
+                if action is None:
+                    action = greedy_fallback(amb, hosp, vehicles)
             else:
-
-                action = random.randint(0,3)
+                action = random.randint(0, 3)
 
             result = env.step(action)
-
-            if len(result)==3:
-                obs,reward,done = result
+            if len(result) == 3:
+                obs, reward, done = result
             else:
-                obs,reward,done,_ = result
+                obs, reward, done, _ = result
 
-            reward=float(reward)
-
+            reward = float(reward)
             rewards.append(reward)
+            steps_taken = step
 
-            steps_taken=step
-
-            log_step(
-                step=step,
-                action=action,
-                reward=reward,
-                done=done
-            )
+            log_step(step=step, action=action, reward=reward, done=done)
 
             if done:
                 break
 
-        total=sum(rewards)
+        total   = sum(rewards)
+        score   = min(max(total / MAX_POSSIBLE_REWARD, 0.0), 1.0)
+        success = bool(done and rewards and rewards[-1] >= 1.0)
 
-        score=min(
-            max(total/MAX_POSSIBLE_REWARD,0.0),
-            1.0
-        )
-
-        success=bool(
-            done and rewards and rewards[-1]>=1.0
-        )
-
-    except Exception as e:
-
+    except Exception:
         import traceback
-
-        print(
-            traceback.format_exc(),
-            flush=True
-        )
+        print(traceback.format_exc(), flush=True)
 
     finally:
+        log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
 
-        try:
-            env.close()
-        except:
-            pass
-
-        log_end(
-            success=success,
-            steps=steps_taken,
-            score=score,
-            rewards=rewards
-        )
-
-
-# ── main ─────────────────────────────────────
-
+# ── main ─────────────────────────────────────────
 def main():
-
     if TASK_NAME:
-
         run_episode(TASK_NAME)
-
     else:
-
-        for difficulty in ["easy","medium","hard"]:
-
+        for difficulty in ["easy", "medium", "hard"]:
             run_episode(difficulty)
-
 
 if __name__ == "__main__":
     main()
-
-    ''' Keep container alive briefly so validator can read logs
-    import time
-    time.sleep(120)'''
