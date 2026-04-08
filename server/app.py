@@ -1,7 +1,9 @@
-from inference import app
+import threading
+from inference import app, run_inference
 
 def main():
-    app.run(host="0.0.0.0", port=7860)
+    t = threading.Thread(target=run_inference, daemon=True)
+    t.start()
 
 if __name__ == "__main__":
     main()
