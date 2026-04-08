@@ -11,8 +11,8 @@ from env.ambulance_env import AmbclearEnv
 TASK_NAME    = os.getenv("TASK_NAME", None)
 BENCHMARK    = os.getenv("BENCHMARK", "ambulance")
 HF_TOKEN     = os.getenv("HF_TOKEN", "")
-API_BASE_URL = os.getenv("API_BASE_URL", "https://api.groq.com/openai/v1")
-MODEL_NAME   = os.getenv("MODEL_NAME", "llama-3.3-70b-versatile")
+API_BASE_URL = os.getenv("API_BASE_URL")
+MODEL_NAME   = os.getenv("MODEL_NAME")
 API_KEY      = os.getenv("ambclear_api") or HF_TOKEN
 
 SEED = 42
@@ -75,19 +75,6 @@ def step():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@app.route("/state", methods=["GET", "POST"])
-def state():
-    global global_env
-    try:
-        if global_env is None:
-            return jsonify({"error": "Call /reset first"}), 400
-        obs = global_env.state()
-        return jsonify({
-            "observation": obs.tolist() if hasattr(obs, "tolist") else str(obs)
-        })
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
 # ── logging ───────────────────────────────────────────────────────────────────
 def log_start(task, env, model):
     print(f"[START] task={task} env={env} model={model}", flush=True)
@@ -111,7 +98,7 @@ def log_end(success, steps, score, rewards):
         flush=True
     )
 
-# ── grid helpers ──────────────────────────────────────────────────────────────
+# ── helpers ───────────────────────────────────────────────────────────────────
 def find_entity(grid, entity_id):
     positions = list(zip(*np.where(grid == entity_id)))
     return tuple(positions[0]) if positions else None
@@ -157,27 +144,6 @@ def astar(start, goal, vehicles, signals):
 
     return random.randint(0, 3)
 
-# ── greedy fallback ───────────────────────────────────────────────────────────
-def greedy_fallback(amb, goal, vehicles):
-    vehicle_set = set(vehicles)
-    row_diff    = goal[0] - amb[0]
-    col_diff    = goal[1] - amb[1]
-    candidates  = []
-    if row_diff != 0:
-        candidates.append((abs(row_diff), DOWN if row_diff > 0 else UP))
-    if col_diff != 0:
-        candidates.append((abs(col_diff), RIGHT if col_diff > 0 else LEFT))
-    candidates.sort(reverse=True)
-    for _, action in candidates:
-        dr, dc = DELTAS[action]
-        if (amb[0]+dr, amb[1]+dc) not in vehicle_set:
-            return action
-    for action in [RIGHT, DOWN, UP, LEFT]:
-        dr, dc = DELTAS[action]
-        if (amb[0]+dr, amb[1]+dc) not in vehicle_set:
-            return action
-    return random.randint(0, 3)
-
 # ── LLM action ────────────────────────────────────────────────────────────────
 def get_llm_action(client, step_num, obs_str, history):
     try:
@@ -186,45 +152,46 @@ def get_llm_action(client, step_num, obs_str, history):
             model=MODEL_NAME,
             messages=[
                 {"role": "system", "content": (
-                    "You control an ambulance on a 7x7 grid. "
-                    "Actions: 0=UP, 1=DOWN, 2=LEFT, 3=RIGHT. "
-                    "Navigate to the hospital (3) avoiding vehicles (1). "
-                    "Reply with ONLY one integer: 0, 1, 2, or 3."
+                    "Return one number: 0,1,2 or 3."
                 )},
                 {"role": "user", "content": (
-                    f"Step: {step_num}\n"
-                    f"Grid:\n{obs_str}\n"
-                    f"History:\n{history_block}\n"
-                    f"Action:"
+                    f"Step {step_num}\nGrid:\n{obs_str}"
                 )}
             ],
             temperature=0.2,
             max_tokens=8,
         )
+
         text = (completion.choices[0].message.content or "").strip()
+
         for ch in text:
             if ch in "0123":
                 return int(ch)
+
     except Exception as e:
         print(f"[DEBUG] LLM failed: {e}", flush=True)
+
     return None
 
-# ── run one episode ───────────────────────────────────────────────────────────
+
+# ── run episode ───────────────────────────────────────────────────────────────
 def run_episode(task_name, client):
+
     env         = AmbclearEnv(task_name)
     rewards     = []
     steps_taken = 0
     success     = False
-    score       = 0.0
     history     = []
 
     log_start(task=task_name, env=BENCHMARK, model=MODEL_NAME)
 
     try:
+
         obs  = env.reset()
         done = False
 
         for step_num in range(1, env.max_steps + 1):
+
             if done:
                 break
 
@@ -235,56 +202,111 @@ def run_episode(task_name, client):
             signals  = get_signals(grid)
 
             if amb and hosp:
-                action = astar(amb, hosp, vehicles, signals)
-                if action is None:
-                    action = get_llm_action(client, step_num, str(grid), history)
-                if action is None:
-                    action = greedy_fallback(amb, hosp, vehicles)
+
+                # ✅ FORCE ONE LLM CALL ONLY AT STEP 1
+                if step_num == 1:
+
+                    llm_action = get_llm_action(
+                        client,
+                        step_num,
+                        str(grid),
+                        history
+                    )
+
+                    if llm_action is not None:
+                        action = llm_action
+                    else:
+                        action = astar(amb, hosp, vehicles, signals)
+
+                else:
+
+                    action = astar(amb, hosp, vehicles, signals)
+
             else:
+
                 action = random.randint(0, 3)
 
             result = env.step(action)
+
             if len(result) == 3:
                 obs, reward, done = result
             else:
                 obs, reward, done, _ = result
 
             reward = float(reward)
+
             rewards.append(reward)
             steps_taken = step_num
-            history.append(f"step={step_num} action={action} reward={reward:.2f}")
 
-            log_step(step=step_num, action=action, reward=reward, done=done)
+            history.append(
+                f"step={step_num} action={action}"
+            )
+
+            log_step(
+                step=step_num,
+                action=action,
+                reward=reward,
+                done=done
+            )
 
             if done:
                 break
 
-        total   = sum(rewards)
-        score   = min(max(total / MAX_POSSIBLE_REWARD, 0.0), 1.0)
-        success = bool(done and rewards and rewards[-1] >= 1.0)
+        total = sum(rewards)
 
-    except Exception:
-        import traceback
-        print(traceback.format_exc(), flush=True)
+        score = min(
+            max(total / MAX_POSSIBLE_REWARD, 0.0),
+            1.0
+        )
+
+        success = bool(
+            done and rewards and rewards[-1] >= 1.0
+        )
 
     finally:
-        log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
+
+        try:
+            env.close()
+        except:
+            pass
+
+        log_end(
+            success=success,
+            steps=steps_taken,
+            score=score,
+            rewards=rewards
+        )
 
 # ── inference thread ──────────────────────────────────────────────────────────
 def run_inference():
-    client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+
+    client = OpenAI(
+        base_url=API_BASE_URL,
+        api_key=API_KEY
+    )
+
     if TASK_NAME:
+
         run_episode(TASK_NAME, client)
+
     else:
+
         for difficulty in ["easy", "medium", "hard"]:
+
             run_episode(difficulty, client)
+
 
 # ── entrypoint ────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    t = threading.Thread(target=run_inference, daemon=False)
+
+    t = threading.Thread(
+        target=run_inference,
+        daemon=False
+    )
+
     t.start()
     t.join()
 
-    # Keep container alive briefly so validator can read logs
+    # keep container alive
     import time
     time.sleep(120)
