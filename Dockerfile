@@ -1,9 +1,9 @@
-FROM python:3.10-slim
+name: ambulance-env
 
-WORKDIR /app
+version: "1.0"
 
-COPY . /app
+docker:
+  image: null
 
-RUN pip install --no-cache-dir -r requirements.txt
-
-CMD ["python", "inference.py"]
+entrypoint:
+  command: ["python", "inference.py"]
