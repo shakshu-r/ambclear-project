@@ -265,6 +265,10 @@ def main():
             run_episode(difficulty)
 
 
-if __name__=="__main__":
-
+if __name__ == "__main__":
     main()
+
+    # KEEP CONTAINER ALIVE
+    import time
+    while True:
+        time.sleep(60)
