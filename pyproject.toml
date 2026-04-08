@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "ambclear"
+version = "1.0.0"
+description = "Intelligent Ambulance Clearance Environment"
+requires-python = ">=3.10"
+dependencies = [
+    "flask",
+    "numpy",
+    "openai",
+]
