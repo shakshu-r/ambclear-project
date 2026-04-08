@@ -3,7 +3,6 @@ import random
 import threading
 import numpy as np
 import heapq
-from typing import List, Tuple, Optional
 from flask import Flask, request, jsonify
 from openai import OpenAI
 from env.ambulance_env import AmbclearEnv
@@ -44,10 +43,10 @@ def home():
 def reset():
     global global_env
     try:
-        data      = request.get_json(silent=True) or {}
-        task      = data.get("task", TASK_NAME or "easy")
+        data       = request.get_json(silent=True) or {}
+        task       = data.get("task", TASK_NAME or "easy")
         global_env = AmbclearEnv(task)
-        obs       = global_env.reset()
+        obs        = global_env.reset()
         return jsonify({
             "observation": obs.tolist() if hasattr(obs, "tolist") else str(obs),
             "task": task
@@ -282,10 +281,6 @@ def run_inference():
 
 # ── entrypoint ────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    t = threading.Thread(target=run_inference, daemon=True)
+    t = threading.Thread(target=run_inference, daemon=False)
     t.start()
-    try:
-        print("SERVER STARTING ON 0.0.0.0:7860", flush=True)
-        app.run(host="0.0.0.0", port=7860, debug=False)
-    except OSError:
-        print("Port 7860 already in use, skipping Flask start", flush=True)
+    t.join()
