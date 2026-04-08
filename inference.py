@@ -10,10 +10,14 @@ from env.ambulance_env import AmbclearEnv
 # ── config ────────────────────────────────────────────────────────────────────
 TASK_NAME    = os.getenv("TASK_NAME", None)
 BENCHMARK    = os.getenv("BENCHMARK", "ambulance")
-HF_TOKEN     = os.getenv("HF_TOKEN", "")
+
+# REQUIRED VARIABLES
+HF_TOKEN     = os.getenv("HF_TOKEN")
 API_BASE_URL = os.getenv("API_BASE_URL")
 MODEL_NAME   = os.getenv("MODEL_NAME")
-API_KEY      = os.getenv("ambclear_api") or HF_TOKEN
+
+# MUST use HF_TOKEN only
+API_KEY = HF_TOKEN
 
 SEED = 42
 random.seed(SEED)
@@ -145,19 +149,28 @@ def astar(start, goal, vehicles, signals):
     return random.randint(0, 3)
 
 # ── LLM action ────────────────────────────────────────────────────────────────
-def get_llm_action(client, step_num, obs_str, history):
+def get_llm_action(client, step_num, obs_str):
+
     try:
-        history_block = "\n".join(history[-4:]) if history else "None"
+
         completion = client.chat.completions.create(
+
             model=MODEL_NAME,
+
             messages=[
-                {"role": "system", "content": (
-                    "Return one number: 0,1,2 or 3."
-                )},
-                {"role": "user", "content": (
-                    f"Step {step_num}\nGrid:\n{obs_str}"
-                )}
+
+                {
+                    "role": "system",
+                    "content": "Return one number: 0,1,2 or 3."
+                },
+
+                {
+                    "role": "user",
+                    "content": f"Step {step_num}\nGrid:\n{obs_str}"
+                }
+
             ],
+
             temperature=0.2,
             max_tokens=8,
         )
@@ -177,17 +190,17 @@ def get_llm_action(client, step_num, obs_str, history):
 # ── run episode ───────────────────────────────────────────────────────────────
 def run_episode(task_name, client):
 
-    env         = AmbclearEnv(task_name)
-    rewards     = []
+    env = AmbclearEnv(task_name)
+
+    rewards = []
     steps_taken = 0
-    success     = False
-    history     = []
+    success = False
 
     log_start(task=task_name, env=BENCHMARK, model=MODEL_NAME)
 
     try:
 
-        obs  = env.reset()
+        obs = env.reset()
         done = False
 
         for step_num in range(1, env.max_steps + 1):
@@ -195,32 +208,43 @@ def run_episode(task_name, client):
             if done:
                 break
 
-            grid     = np.array(obs)
-            amb      = find_entity(grid, AMBULANCE_ID)
-            hosp     = find_entity(grid, HOSPITAL_ID)
+            grid = np.array(obs)
+
+            amb = find_entity(grid, AMBULANCE_ID)
+            hosp = find_entity(grid, HOSPITAL_ID)
+
             vehicles = get_vehicles(grid)
             signals  = get_signals(grid)
 
             if amb and hosp:
 
-                # ✅ FORCE ONE LLM CALL ONLY AT STEP 1
+                # FORCE ONE LLM CALL AT STEP 1
                 if step_num == 1:
 
                     llm_action = get_llm_action(
                         client,
                         step_num,
-                        str(grid),
-                        history
+                        str(grid)
                     )
 
                     if llm_action is not None:
                         action = llm_action
                     else:
-                        action = astar(amb, hosp, vehicles, signals)
+                        action = astar(
+                            amb,
+                            hosp,
+                            vehicles,
+                            signals
+                        )
 
                 else:
 
-                    action = astar(amb, hosp, vehicles, signals)
+                    action = astar(
+                        amb,
+                        hosp,
+                        vehicles,
+                        signals
+                    )
 
             else:
 
@@ -237,10 +261,6 @@ def run_episode(task_name, client):
 
             rewards.append(reward)
             steps_taken = step_num
-
-            history.append(
-                f"step={step_num} action={action}"
-            )
 
             log_step(
                 step=step_num,
@@ -281,8 +301,8 @@ def run_episode(task_name, client):
 def run_inference():
 
     client = OpenAI(
-        base_url=API_BASE_URL,
-        api_key=API_KEY
+        base_url=os.environ["API_BASE_URL"],
+        api_key=os.environ["API_KEY"]
     )
 
     if TASK_NAME:
