@@ -268,7 +268,6 @@ def main():
 if __name__ == "__main__":
     main()
 
-    # KEEP CONTAINER ALIVE
+    # Keep container alive briefly so validator can read logs
     import time
-    while True:
-        time.sleep(60)
+    time.sleep(120)
