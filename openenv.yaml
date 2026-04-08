@@ -1,6 +1,6 @@
 name: ambulance-env
 
-endpoints:
-  health: /health
-  reset: /reset
-  step: /step
+version: "1.0"
+
+entrypoint:
+  command: ["python", "inference.py"]
