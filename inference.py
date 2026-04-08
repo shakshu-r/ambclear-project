@@ -179,7 +179,7 @@ def greedy_fallback(amb, goal, vehicles):
             return action
     return random.randint(0, 3)
 
-# ── LLM action (OpenAI client as required) ────────────────────────────────────
+# ── LLM action ────────────────────────────────────────────────────────────────
 def get_llm_action(client, step_num, obs_str, history):
     try:
         history_block = "\n".join(history[-4:]) if history else "None"
@@ -236,13 +236,10 @@ def run_episode(task_name, client):
             signals  = get_signals(grid)
 
             if amb and hosp:
-                # primary: A*
                 action = astar(amb, hosp, vehicles, signals)
                 if action is None:
-                    # secondary: LLM
                     action = get_llm_action(client, step_num, str(grid), history)
                 if action is None:
-                    # final: greedy
                     action = greedy_fallback(amb, hosp, vehicles)
             else:
                 action = random.randint(0, 3)
@@ -285,10 +282,10 @@ def run_inference():
 
 # ── entrypoint ────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    # Run inference in background thread
     t = threading.Thread(target=run_inference, daemon=True)
     t.start()
-
-    # Keep Flask alive so validator can ping /reset and /step
-    print("SERVER STARTING ON 0.0.0.0:7860", flush=True)
-    app.run(host="0.0.0.0", port=7860, debug=False)
+    try:
+        print("SERVER STARTING ON 0.0.0.0:7860", flush=True)
+        app.run(host="0.0.0.0", port=7860, debug=False)
+    except OSError:
+        print("Port 7860 already in use, skipping Flask start", flush=True)
