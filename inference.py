@@ -284,3 +284,7 @@ if __name__ == "__main__":
     t = threading.Thread(target=run_inference, daemon=False)
     t.start()
     t.join()
+
+    # Keep container alive briefly so validator can read logs
+    import time
+    time.sleep(120)
