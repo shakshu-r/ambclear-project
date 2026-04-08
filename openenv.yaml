@@ -1,18 +1,6 @@
-name: ambclear-env
+name: ambulance-env
 
-environment:
-  entry_point: env.ambulance_env:AmbclearEnv
-
-tasks:
-
-  - id: easy
-    description: Low traffic with few vehicles
-
-  - id: medium
-    description: Moderate traffic conditions
-
-  - id: hard
-    description: Heavy traffic congestion
-
-grader:
-  entry_point: env.graders:grade
+endpoints:
+  health: /health
+  reset: /reset
+  step: /step
