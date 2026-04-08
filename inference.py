@@ -197,5 +197,20 @@ def main():
         for difficulty in ["easy", "medium", "hard"]:
             run_episode(difficulty)
 
-if __name__ == "__main__":
+import gradio as gr
+
+def run_all():
     main()
+    return "All tasks completed successfully!"
+
+iface = gr.Interface(
+    fn=run_all,
+    inputs=[],
+    outputs="text",
+    title="AmbuClear Environment Runner"
+)
+
+iface.launch(
+    server_name="0.0.0.0",
+    server_port=7860
+)
