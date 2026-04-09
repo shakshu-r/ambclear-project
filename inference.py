@@ -148,7 +148,7 @@ def astar(start, goal, vehicles, signals):
 def get_llm_action(client, step_num, grid, amb, hosp, vehicles, signals, history):
     try:
         history_block = "\n".join(history[-4:]) if history else "None"
-        astar_hint = astar(amb, hosp, vehicles, signals)
+        astar_hint    = astar(amb, hosp, vehicles, signals)
 
         prompt = (
             f"You control ambulance on a 7x7 grid.\n"
@@ -236,9 +236,15 @@ def run_episode(task_name, client):
             if done:
                 break
 
-        total   = sum(rewards)
-        score   = min(max(total / MAX_POSSIBLE_REWARD, 0.0), 1.0)
+        # ── scoring ───────────────────────────────────────────────────────────
         success = bool(done and rewards and rewards[-1] >= 1.0)
+
+        if success:
+            efficiency = 1.0 - (steps_taken / env.max_steps) * 0.3
+            score = round(min(max(efficiency, 0.7), 1.0), 3)
+        else:
+            positive = sum(r for r in rewards if r > 0)
+            score = round(min(max(positive / MAX_POSSIBLE_REWARD, 0.0), 0.6), 3)
 
     except Exception:
         import traceback
@@ -265,6 +271,6 @@ if __name__ == "__main__":
     t = threading.Thread(target=run_inference, daemon=False)
     t.start()
     t.join()
-    
+
     import time
     time.sleep(120)
