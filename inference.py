@@ -148,10 +148,8 @@ def astar(start, goal, vehicles, signals, affected_vehicles=None):
             nr, nc = r + dr, c + dc
             if not (0 <= nr < 7 and 0 <= nc < 7):
                 continue
-            # Hard block: unaffected vehicles only
             if (nr, nc) in vehicle_set and (nr, nc) not in affected_set:
                 continue
-            # Affected vehicle = cost 2 (yielding), signal = cost 4, empty = cost 1
             if (nr, nc) in affected_set:
                 step_cost = 2
             elif (nr, nc) in signal_set:
@@ -200,6 +198,7 @@ def get_llm_action(client, step_num, grid, amb, hosp, vehicles, signals,
             ],
             temperature=0.2,
             max_tokens=8,
+            timeout=10,
         )
         text = (completion.choices[0].message.content or "").strip()
         for ch in text:
@@ -236,17 +235,14 @@ def run_episode(task_name, client):
             signals  = get_signals(grid)
 
             if amb and hosp:
-                # BharatLink broadcast
                 affected = comm.broadcast(amb, vehicles)
                 print(f"[BHARATLINK] step={step_num} affected={affected}", flush=True)
 
-                # LLM is PRIMARY every step
                 action = get_llm_action(
                     client, step_num, grid,
                     amb, hosp, vehicles, signals,
                     history, affected
                 )
-                # A* with BharatLink as fallback
                 if action is None:
                     action = astar(amb, hosp, vehicles, signals, affected)
             else:
@@ -303,8 +299,4 @@ if __name__ == "__main__":
     t = threading.Thread(target=run_inference, daemon=False)
     t.start()
     t.join()
-
-    print("Inference complete. Keeping container alive...", flush=True)
-    import time
-    while True:
-        time.sleep(60)
+    print("Inference complete.", flush=True)
