@@ -6,6 +6,7 @@ import heapq
 from flask import Flask, request, jsonify
 from openai import OpenAI
 from env.ambulance_env import AmbclearEnv
+from env.graders import grade
 
 # ── config ────────────────────────────────────────────────────────────────────
 TASK_NAME    = os.getenv("TASK_NAME", None)
@@ -42,6 +43,31 @@ class BharatLinkComm:
             if distance <= self.radius:
                 affected.append((vx, vy))
         return affected
+
+# ── ASCII Visualizer ──────────────────────────────────────────────────────────
+def render_ascii(grid, affected_vehicles=None):
+    affected_set = set(affected_vehicles) if affected_vehicles else set()
+    symbols = {
+        0: ' . ',
+        1: '[V]',
+        2: '[A]',
+        3: '[H]',
+        4: '[S]',
+    }
+    lines = []
+    lines.append("  +" + "---+" * 7)
+    for r in range(7):
+        row = "  |"
+        for c in range(7):
+            val = int(grid[r][c])
+            if val == 1 and (r, c) in affected_set:
+                row += '[~]'  # yielding vehicle
+            else:
+                row += symbols.get(val, ' ? ')
+            row += '|'
+        lines.append(row)
+        lines.append("  +" + "---+" * 7)
+    return "\n".join(lines)
 
 # ── Flask app ─────────────────────────────────────────────────────────────────
 app = Flask(__name__)
@@ -224,6 +250,10 @@ def run_episode(task_name, client):
         obs  = env.reset()
         done = False
 
+        # Print initial grid
+        print(f"\n[GRID] Initial state — task={task_name}", flush=True)
+        print(render_ascii(obs), flush=True)
+
         for step_num in range(1, env.max_steps + 1):
             if done:
                 break
@@ -261,18 +291,25 @@ def run_episode(task_name, client):
 
             log_step(step=step_num, action=action, reward=reward, done=done)
 
+            # Print grid every 5 steps and on completion
+            if step_num % 5 == 0 or done:
+                print(f"\n[GRID] After step {step_num}:", flush=True)
+                print(render_ascii(np.array(obs), affected), flush=True)
+
             if done:
                 break
 
-        # ── scoring ───────────────────────────────────────────────────────────
+        # ── use real grader ───────────────────────────────────────────────────
+        score   = grade(task_name, env)
         success = bool(done and rewards and rewards[-1] >= 1.0)
 
-        if success:
-            efficiency = 1.0 - (steps_taken / env.max_steps) * 0.3
-            score = round(min(max(efficiency, 0.7), 1.0), 3)
-        else:
-            positive = sum(r for r in rewards if r > 0)
-            score = round(min(max(positive / MAX_POSSIBLE_REWARD, 0.0), 0.6), 3)
+        # ── print detailed metrics ────────────────────────────────────────────
+        print(f"\n[METRICS] task={task_name}", flush=True)
+        print(f"  collisions    : {env.collision_count}", flush=True)
+        print(f"  signal_stops  : {env.signal_stops}", flush=True)
+        print(f"  priority_msgs : {env.priority_messages}", flush=True)
+        print(f"  corridor      : {env.corridor_success}/{env.corridor_checks}", flush=True)
+        print(f"  score         : {score}", flush=True)
 
     except Exception:
         import traceback
