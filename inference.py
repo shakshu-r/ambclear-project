@@ -272,5 +272,6 @@ if __name__ == "__main__":
     t.start()
     t.join()
 
-    import time
-    time.sleep(120)
+    # Keep container alive permanently
+    print("Inference complete. Keeping container alive...", flush=True)
+    app.run(host="0.0.0.0", port=7860, debug=False)
