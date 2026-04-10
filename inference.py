@@ -29,6 +29,20 @@ SIGNAL_ID    = 4
 UP, DOWN, LEFT, RIGHT = 0, 1, 2, 3
 DELTAS = {UP: (-1,0), DOWN: (1,0), LEFT: (0,-1), RIGHT: (0,1)}
 
+# ── BharatLink V2V Communication ──────────────────────────────────────────────
+class BharatLinkComm:
+    def __init__(self, radius=2):
+        self.radius = radius
+
+    def broadcast(self, ambulance_pos, vehicle_positions):
+        ax, ay = ambulance_pos
+        affected = []
+        for vx, vy in vehicle_positions:
+            distance = abs(ax - vx) + abs(ay - vy)
+            if distance <= self.radius:
+                affected.append((vx, vy))
+        return affected
+
 # ── Flask app ─────────────────────────────────────────────────────────────────
 app = Flask(__name__)
 app.url_map.strict_slashes = False
@@ -111,10 +125,11 @@ def get_signals(grid):
     return [tuple(p) for p in zip(*np.where(grid == SIGNAL_ID))] \
         if np.any(grid == SIGNAL_ID) else []
 
-# ── A* (fallback) ─────────────────────────────────────────────────────────────
-def astar(start, goal, vehicles, signals):
-    vehicle_set = set(vehicles)
-    signal_set  = set(signals)
+# ── A* with BharatLink awareness ──────────────────────────────────────────────
+def astar(start, goal, vehicles, signals, affected_vehicles=None):
+    vehicle_set  = set(vehicles)
+    signal_set   = set(signals)
+    affected_set = set(affected_vehicles) if affected_vehicles else set()
 
     def heuristic(r, c):
         return abs(r - goal[0]) + abs(c - goal[1])
@@ -133,9 +148,16 @@ def astar(start, goal, vehicles, signals):
             nr, nc = r + dr, c + dc
             if not (0 <= nr < 7 and 0 <= nc < 7):
                 continue
-            if (nr, nc) in vehicle_set:
+            # Hard block: unaffected vehicles only
+            if (nr, nc) in vehicle_set and (nr, nc) not in affected_set:
                 continue
-            step_cost = 4 if (nr, nc) in signal_set else 1
+            # Affected vehicle = cost 2 (yielding), signal = cost 4, empty = cost 1
+            if (nr, nc) in affected_set:
+                step_cost = 2
+            elif (nr, nc) in signal_set:
+                step_cost = 4
+            else:
+                step_cost = 1
             new_g = g + step_cost
             new_f = new_g + heuristic(nr, nc)
             if (nr, nc) not in visited:
@@ -145,10 +167,11 @@ def astar(start, goal, vehicles, signals):
     return random.randint(0, 3)
 
 # ── LLM action (PRIMARY - called every step) ──────────────────────────────────
-def get_llm_action(client, step_num, grid, amb, hosp, vehicles, signals, history):
+def get_llm_action(client, step_num, grid, amb, hosp, vehicles, signals,
+                   history, affected_vehicles):
     try:
         history_block = "\n".join(history[-4:]) if history else "None"
-        astar_hint    = astar(amb, hosp, vehicles, signals)
+        astar_hint    = astar(amb, hosp, vehicles, signals, affected_vehicles)
 
         prompt = (
             f"You control ambulance on a 7x7 grid.\n"
@@ -156,6 +179,7 @@ def get_llm_action(client, step_num, grid, amb, hosp, vehicles, signals, history
             f"Ambulance at: {amb}\n"
             f"Hospital at: {hosp}\n"
             f"Vehicles at: {vehicles}\n"
+            f"Vehicles that received BharatLink signal (will yield): {affected_vehicles}\n"
             f"Step: {step_num}\n"
             f"Recent history: {history_block}\n"
             f"Suggested action: {astar_hint}\n"
@@ -168,6 +192,8 @@ def get_llm_action(client, step_num, grid, amb, hosp, vehicles, signals, history
             messages=[
                 {"role": "system", "content": (
                     "You are an ambulance navigation agent. "
+                    "Vehicles that received BharatLink signal will yield — "
+                    "you can move through them. "
                     "Always reply with exactly one digit: 0, 1, 2, or 3."
                 )},
                 {"role": "user", "content": prompt}
@@ -186,6 +212,7 @@ def get_llm_action(client, step_num, grid, amb, hosp, vehicles, signals, history
 # ── run one episode ───────────────────────────────────────────────────────────
 def run_episode(task_name, client):
     env         = AmbclearEnv(task_name)
+    comm        = BharatLinkComm(radius=2)
     rewards     = []
     steps_taken = 0
     success     = False
@@ -209,14 +236,19 @@ def run_episode(task_name, client):
             signals  = get_signals(grid)
 
             if amb and hosp:
-                # LLM is PRIMARY on every step
+                # BharatLink broadcast
+                affected = comm.broadcast(amb, vehicles)
+                print(f"[BHARATLINK] step={step_num} affected={affected}", flush=True)
+
+                # LLM is PRIMARY every step
                 action = get_llm_action(
                     client, step_num, grid,
-                    amb, hosp, vehicles, signals, history
+                    amb, hosp, vehicles, signals,
+                    history, affected
                 )
-                # A* is fallback if LLM fails
+                # A* with BharatLink as fallback
                 if action is None:
-                    action = astar(amb, hosp, vehicles, signals)
+                    action = astar(amb, hosp, vehicles, signals, affected)
             else:
                 action = random.randint(0, 3)
 
@@ -272,6 +304,7 @@ if __name__ == "__main__":
     t.start()
     t.join()
 
-    # Keep container alive permanently
     print("Inference complete. Keeping container alive...", flush=True)
-    app.run(host="0.0.0.0", port=7860, debug=False)
+    import time
+    while True:
+        time.sleep(60)
